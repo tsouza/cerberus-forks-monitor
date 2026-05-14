@@ -1,0 +1,82 @@
+# cerberus-forks-monitor — declarative config for the daily upstream sync.
+#
+# Each entry describes one upstream → fork pairing. The monitor.sh script
+# reads this file, computes whether any commit landing in upstream/main
+# since the last tag touched the watched subtree, and rebases + retags the
+# fork if so. See README.md for the full flow.
+#
+# - relevant_paths : passed directly to `git log -- <paths>`. Use directory
+#                    paths to match anything under them; use specific file
+#                    paths when you only care about one file.
+# - tag_prefix     : the semver prefix for new tags. Must already exist
+#                    on the fork (the baseline v0.0.1-cerberus-* tags were
+#                    minted when the fork was created).
+
+deps:
+  - name: prometheus
+    upstream: prometheus/prometheus
+    fork: tsouza/prometheus
+    fork_branch: cerberus-parser
+    tag_prefix: v0
+    test_subtrees:
+      - ./promql/parser/...
+      - ./model/labels/...
+      - ./model/histogram/...
+    relevant_paths:
+      - promql/parser
+      - model/labels
+      - model/histogram
+      - util/annotations
+      - storage/storage.go
+      - tsdb/chunkenc
+      - tsdb/chunks/chunks.go
+
+  - name: loki
+    upstream: grafana/loki
+    fork: tsouza/loki
+    fork_branch: cerberus-parser
+    # Loki uses /v3 major version; tags must be v3.x.y.
+    tag_prefix: v3
+    test_subtrees:
+      - ./pkg/logql/syntax/...
+      - ./pkg/logql/log/pattern/...
+      - ./pkg/logqlmodel/...
+    relevant_paths:
+      - pkg/logql/syntax
+      - pkg/logql/log/pattern
+      - pkg/logqlmodel
+      - pkg/logql/log/parser.go
+      - pkg/logql/log/labels.go
+      - pkg/logql/log/fmt.go
+
+  - name: tempo
+    upstream: grafana/tempo
+    fork: tsouza/tempo
+    fork_branch: cerberus-accessors
+    tag_prefix: v0
+    test_subtrees:
+      - ./pkg/traceql/...
+    relevant_paths:
+      - pkg/traceql
+
+  - name: otelc
+    upstream: open-telemetry/opentelemetry-collector-contrib
+    fork: tsouza/opentelemetry-collector-contrib
+    fork_branch: cerberus-ddl
+    tag_prefix: v0
+    # collector-contrib uses a per-subdirectory module layout; test inside
+    # the clickhouseexporter module.
+    test_subtrees:
+      - ./sqltemplates/...
+      - ./internal/sqltemplates/...
+    test_workdir: exporter/clickhouseexporter
+    # Per-submodule tags are minted in addition to the toplevel tag. Listed
+    # paths each get a `<path>/v<TAG>` reference pointing at the rebased SHA.
+    submodule_tag_paths:
+      - exporter/clickhouseexporter
+      - internal/coreinternal
+      - pkg/core/xidutils
+      - pkg/translator/jaeger
+    relevant_paths:
+      - exporter/clickhouseexporter/sqltemplates
+      - exporter/clickhouseexporter/internal/sqltemplates

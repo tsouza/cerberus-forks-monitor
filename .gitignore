@@ -1,0 +1,6 @@
+# Local test artifacts. The monitor uses mktemp for its working dirs
+# so nothing should land here in CI, but keep a couple of guards for
+# local dry-runs.
+work/
+*.log
+.envrc

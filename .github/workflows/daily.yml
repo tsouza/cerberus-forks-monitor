@@ -1,0 +1,58 @@
+name: daily-monitor
+
+# Once-a-day check of the four cerberus fork branches. Runs after the
+# Dependabot daily window so that any newly-minted tags on the forks
+# show up in the next Dependabot batch (Dependabot tends to schedule
+# around 06:00–09:00 UTC; we run at 10:17 UTC to avoid the same minute
+# every cron in the world picks).
+#
+# Manual dispatch is supported so a maintainer can force a re-check
+# after a successful manual rebase, or to validate config changes.
+
+on:
+  schedule:
+    - cron: '17 10 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          # Pinned to a version known to build the four upstreams. The
+          # forks themselves carry their own go.mod which dictates the
+          # actual toolchain used by `go test` thanks to GOTOOLCHAIN=auto.
+          go-version: '1.26.2'
+          cache: false
+
+      - uses: mikefarah/yq@v4
+
+      - name: Configure git identity
+        run: |
+          git config --global user.email "cerberus-forks-monitor@users.noreply.github.com"
+          git config --global user.name  "cerberus-forks-monitor"
+          git config --global rebase.autoStash true
+          git config --global pull.rebase true
+
+      - name: Configure remote auth (FORKS_PAT)
+        env:
+          FORKS_PAT: ${{ secrets.FORKS_PAT }}
+        run: |
+          # `gh` for issue creation, https for git push to the forks.
+          echo "${FORKS_PAT}" | gh auth login --with-token
+          # Make https://github.com/... pushes use the PAT automatically.
+          git config --global url."https://x-access-token:${FORKS_PAT}@github.com/".insteadOf "https://github.com/"
+
+      - name: Run monitor
+        env:
+          GH_TOKEN: ${{ secrets.FORKS_PAT }}
+          MONITOR_REPO: ${{ github.repository }}
+        run: ./monitor.sh
