@@ -20,7 +20,7 @@ about lands upstream.
 │ (prometheus, loki,   │   relevant-paths only    │   cerberus-<branch>      │
 │  tempo, otel-c)      │   are forwarded as tags  │     ├── tag v0.0.1       │
 └──────────────────────┘                          │     ├── tag v0.0.2       │
-                                                  │     └── ...               │
+                                                  │     └── ...              │
                                                   └────────────┬─────────────┘
                                                                │
                                        Dependabot watches tags │
