@@ -10,7 +10,8 @@
 #   3. Otherwise rebase fork_branch onto upstream/main, run the configured
 #      test subtrees, and on success push + tag (bumping the patch).
 #   4. On failure (rebase conflict or test red) open an issue in this
-#      repo and skip the dep for today.
+#      repo, skip the dep for today, and mark the overall run failed
+#      (the remaining deps are still processed).
 #
 # Dependencies: bash 5+, git, gh, yq, jq, go.
 
@@ -53,13 +54,19 @@ bump_patch() {
   printf 'v%s.%s.%s%s\n' "${major}" "${minor}" "${patch}" "${suffix}"
 }
 
+# Opens a failure-report issue. Returns nonzero (and logs) if issue
+# creation itself fails so the caller can surface that too — issue
+# creation failing must not hide the underlying dep failure.
 open_issue() {
   local title="$1"
   local body="$2"
-  gh -R "${MONITOR_REPO}" issue create \
+  if ! gh -R "${MONITOR_REPO}" issue create \
     --title "${title}" \
     --body "${body}" \
-    --label "monitor-failure" >/dev/null || true
+    --label "monitor-failure" >/dev/null; then
+    log "    FAILED to open issue: ${title}"
+    return 1
+  fi
 }
 
 process_dep() {
@@ -77,13 +84,23 @@ process_dep() {
 
   log "==> ${name}: upstream=${upstream} fork=${fork} branch=${fork_branch}"
 
+  # NOTE: main() calls this function as an `if` condition, which makes
+  # bash ignore `set -e` inside the function body — every command that
+  # must abort the dep on failure needs an explicit guard.
   local work="${WORK_ROOT}/${name}"
-  git clone --quiet "https://github.com/${fork}.git" "${work}"
+  if ! git clone --quiet "https://github.com/${fork}.git" "${work}"; then
+    log "    clone of ${fork} failed"
+    return 1
+  fi
   pushd "${work}" >/dev/null
 
-  git remote add upstream "https://github.com/${upstream}.git"
-  git fetch --quiet --tags upstream "+refs/heads/main:refs/remotes/upstream/main"
-  git fetch --quiet --tags origin
+  if ! git remote add upstream "https://github.com/${upstream}.git" ||
+     ! git fetch --quiet --tags upstream "+refs/heads/main:refs/remotes/upstream/main" ||
+     ! git fetch --quiet --tags origin; then
+    log "    fetching ${upstream} / ${fork} failed"
+    popd >/dev/null
+    return 1
+  fi
 
   # Find the last cerberus tag on fork_branch. Falls back to the branch root
   # commit if no tag exists yet.
@@ -91,9 +108,9 @@ process_dep() {
   last_tag="$(git describe --tags --abbrev=0 --match "${tag_prefix}.*-cerberus-*" "origin/${fork_branch}" 2>/dev/null || true)"
   if [[ -z "${last_tag}" ]]; then
     log "    no cerberus tag found on ${fork_branch}; cannot proceed safely"
-    open_issue "[${name}] no baseline cerberus tag" "Run an initial tag mint on \`${fork}\` before the monitor can take over."
+    open_issue "[${name}] no baseline cerberus tag" "Run an initial tag mint on \`${fork}\` before the monitor can take over." || true
     popd >/dev/null
-    return 0
+    return 1
   fi
   log "    last tag: ${last_tag}"
 
@@ -107,7 +124,11 @@ process_dep() {
   fi
   log "    relevant commits: $(echo "${changed}" | wc -l)"
 
-  git checkout --quiet "${fork_branch}"
+  if ! git checkout --quiet "${fork_branch}"; then
+    log "    checkout of ${fork_branch} failed"
+    popd >/dev/null
+    return 1
+  fi
   if ! git rebase upstream/main; then
     log "    rebase conflict; opening issue"
     local conflict
@@ -115,16 +136,20 @@ process_dep() {
     git rebase --abort || true
     open_issue \
       "[${name}] rebase conflict on $(date -u +%Y-%m-%d)" \
-      "Rebasing \`${fork_branch}\` onto \`upstream/main\` produced conflicts. Conflict status:\\n\\n\`\`\`\\n${conflict}\\n\`\`\`\\n\\nManual rebase required. After fixing locally and force-pushing, re-run the workflow."
+      "Rebasing \`${fork_branch}\` onto \`upstream/main\` produced conflicts. Conflict status:\\n\\n\`\`\`\\n${conflict}\\n\`\`\`\\n\\nManual rebase required. After fixing locally and force-pushing, re-run the workflow." || true
     popd >/dev/null
-    return 0
+    return 1
   fi
 
   # Run subtree tests.
   local test_status=0
   if (( ${#test_subtrees[@]} > 0 )); then
     if [[ -n "${test_workdir}" ]]; then
-      pushd "${test_workdir}" >/dev/null
+      if ! pushd "${test_workdir}" >/dev/null; then
+        log "    test_workdir ${test_workdir} does not exist after rebase"
+        popd >/dev/null
+        return 1
+      fi
     fi
     log "    running tests: ${test_subtrees[*]}"
     if ! go test -count=1 "${test_subtrees[@]}"; then
@@ -138,27 +163,37 @@ process_dep() {
     log "    tests red after rebase; opening issue"
     open_issue \
       "[${name}] tests fail after rebase on $(date -u +%Y-%m-%d)" \
-      "Rebasing \`${fork_branch}\` onto \`upstream/main\` succeeded, but \`go test\` on the cerberus subtree failed. The branch was NOT force-pushed. Reproduce with: \`git clone https://github.com/${fork}.git && cd $(basename ${fork}) && git fetch origin && git checkout ${fork_branch} && git fetch https://github.com/${upstream}.git main && git rebase FETCH_HEAD\`."
+      "Rebasing \`${fork_branch}\` onto \`upstream/main\` succeeded, but \`go test\` on the cerberus subtree failed. The branch was NOT force-pushed. Reproduce with: \`git clone https://github.com/${fork}.git && cd $(basename ${fork}) && git fetch origin && git checkout ${fork_branch} && git fetch https://github.com/${upstream}.git main && git rebase FETCH_HEAD\`." || true
     popd >/dev/null
-    return 0
+    return 1
   fi
 
   # Tests green — push the rebased branch.
   log "    pushing rebased branch"
-  git push --force-with-lease origin "${fork_branch}"
+  if ! git push --force-with-lease origin "${fork_branch}"; then
+    log "    push of ${fork_branch} failed"
+    popd >/dev/null
+    return 1
+  fi
 
   # Mint new tag.
   local new_tag
   new_tag="$(bump_patch "${last_tag}")"
   log "    minting tag ${new_tag}"
-  git tag "${new_tag}"
-  git push origin "${new_tag}"
+  if ! git tag "${new_tag}" || ! git push origin "${new_tag}"; then
+    log "    minting/pushing tag ${new_tag} failed"
+    popd >/dev/null
+    return 1
+  fi
 
   # Per-submodule tags (collector-contrib style).
   for sub in "${submodule_tag_paths[@]}"; do
     local sub_tag="${sub}/${new_tag}"
-    git tag "${sub_tag}"
-    git push origin "${sub_tag}"
+    if ! git tag "${sub_tag}" || ! git push origin "${sub_tag}"; then
+      log "    minting/pushing submodule tag ${sub_tag} failed"
+      popd >/dev/null
+      return 1
+    fi
     log "    minting submodule tag ${sub_tag}"
   done
 
@@ -169,9 +204,18 @@ main() {
   local names
   mapfile -t names < <(yq -r '.deps[].name' "${CONFIG}")
   log "monitor run start (deps: ${names[*]})"
+  local failures=0
+  local failed_deps=()
   for dep in "${names[@]}"; do
-    process_dep "${dep}"
+    if ! process_dep "${dep}"; then
+      failures=$((failures + 1))
+      failed_deps+=("${dep}")
+    fi
   done
+  if (( failures > 0 )); then
+    log "monitor run FAILED for ${failures} dep(s): ${failed_deps[*]}"
+    exit 1
+  fi
   log "monitor run complete"
 }
 
