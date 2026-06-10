@@ -65,10 +65,12 @@ deps:
     fork_branch: cerberus-ddl
     tag_prefix: v0
     # collector-contrib uses a per-subdirectory module layout; test inside
-    # the clickhouseexporter module.
+    # the clickhouseexporter module. The cerberus-ddl branch hoists
+    # internal/sqltemplates to ./sqltemplates, so only the hoisted path
+    # exists on the fork branch (relevant_paths still watches both the
+    # upstream-internal and hoisted locations).
     test_subtrees:
       - ./sqltemplates/...
-      - ./internal/sqltemplates/...
     test_workdir: exporter/clickhouseexporter
     # Per-submodule tags are minted in addition to the toplevel tag. Listed
     # paths each get a `<path>/v<TAG>` reference pointing at the rebased SHA.
