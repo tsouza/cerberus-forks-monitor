@@ -1,6 +1,6 @@
 # cerberus-forks-monitor
 
-Daily upstream-change monitor for the four cerberus fork repos. Lives
+Daily upstream-change monitor for the cerberus fork repos. Lives
 outside cerberus itself so the cron job is portable, and so its commit
 history doesn't pollute the cerberus main branch.
 
@@ -17,8 +17,8 @@ about lands upstream.
 ```text
 ┌──────────────────────┐    upstream/main         ┌──────────────────────────┐
 │ upstream repos       │ ───────────────────────► │ tsouza/<fork>            │
-│ (prometheus, loki,   │   relevant-paths only    │   cerberus-<branch>      │
-│  tempo, otel-c)      │   are forwarded as tags  │     ├── tag v0.0.1       │
+│ (prometheus,         │   relevant-paths only    │   cerberus-<branch>      │
+│  otel-c)             │   are forwarded as tags  │     ├── tag v0.0.1       │
 └──────────────────────┘                          │     ├── tag v0.0.2       │
                                                   │     └── ...              │
                                                   └────────────┬─────────────┘
@@ -113,6 +113,21 @@ git push origin "$NEXT"
 | Upstream                                              | Fork                                                  | Branch              | Tag prefix |
 | ----------------------------------------------------- | ----------------------------------------------------- | ------------------- | ---------- |
 | `prometheus/prometheus`                               | [`tsouza/prometheus`](https://github.com/tsouza/prometheus) | `cerberus-parser`   | `v0`       |
-| `grafana/loki`                                        | [`tsouza/loki`](https://github.com/tsouza/loki)             | `cerberus-parser`   | `v3`       |
-| `grafana/tempo`                                       | [`tsouza/tempo`](https://github.com/tsouza/tempo)           | `cerberus-accessors`| `v0`       |
 | `open-telemetry/opentelemetry-collector-contrib`      | [`tsouza/opentelemetry-collector-contrib`](https://github.com/tsouza/opentelemetry-collector-contrib) | `cerberus-ddl`      | `v0`       |
+
+The watch list tracks cerberus's `go.mod`, not the set of forks that
+exist. `tsouza/loki` and `tsouza/tempo` were watched here until cerberus
+replaced both parsers with its own clean-room implementations
+(`internal/logql/lsyntax`, `internal/traceql/ast`) and dropped the
+`replace` directives. A fork nothing consumes has nothing to keep in
+sync, and its `cerberus-*` branch drifts until the daily rebase
+conflicts every morning for a dependency that isn't linked — so the
+entries came out with the directives. Before adding one back, check that
+cerberus's `go.mod` actually routes through it.
+
+## Retiring a watch
+
+1. Remove the entry from [`monitor.yml`](monitor.yml) and the table above.
+2. Remove the fork from `.github/dependabot.yml` in cerberus.
+3. Leave the fork repo and its existing tags alone — older cerberus
+   release branches may still resolve against them.

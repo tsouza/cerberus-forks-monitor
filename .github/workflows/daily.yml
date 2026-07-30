@@ -1,6 +1,6 @@
 name: daily-monitor
 
-# Once-a-day check of the four cerberus fork branches. Runs after the
+# Once-a-day check of the cerberus fork branches. Runs after the
 # Dependabot daily window so that any newly-minted tags on the forks
 # show up in the next Dependabot batch (Dependabot tends to schedule
 # around 06:00–09:00 UTC; we run at 10:17 UTC to avoid the same minute
@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          # Pinned to a version known to build the four upstreams. The
+          # Pinned to a version known to build the watched upstreams. The
           # forks themselves carry their own go.mod which dictates the
           # actual toolchain used by `go test` thanks to GOTOOLCHAIN=auto.
           go-version: '1.26.2'
