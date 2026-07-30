@@ -50,8 +50,17 @@ deps:
     # internal/sqltemplates to ./sqltemplates, so only the hoisted path
     # exists on the fork branch (relevant_paths still watches both the
     # upstream-internal and hoisted locations).
+    #
+    # The whole module, not just ./sqltemplates/... — that package holds only
+    # .sql files and an embed.go, so `go test` on it reports ok without
+    # compiling a single consumer. The hoist is a MOVE: what breaks when
+    # upstream changes is an importer of the old path, and nothing under
+    # ./sqltemplates/... imports anything. Upstream adding exporter_profiles.go
+    # (which imports the pre-hoist internal/sqltemplates path) broke the build
+    # while this gate reported green. Testing the module compiles every
+    # importer, which is the only thing that can catch it.
     test_subtrees:
-      - ./sqltemplates/...
+      - ./...
     test_workdir: exporter/clickhouseexporter
     # Per-submodule tags are minted in addition to the toplevel tag. Listed
     # paths each get a `<path>/v<TAG>` reference pointing at the rebased SHA.
