@@ -11,6 +11,15 @@
 # - tag_prefix     : the semver prefix for new tags. Must already exist
 #                    on the fork (the baseline v0.0.1-cerberus-* tags were
 #                    minted when the fork was created).
+#
+# An entry belongs here only while cerberus's go.mod routes that dependency
+# through the fork. A fork cerberus no longer consumes has nothing to keep in
+# sync, and its cerberus-* branch drifts from upstream until the daily rebase
+# conflicts forever — which is red every morning for a dependency nobody
+# links. `grafana/loki` and `grafana/tempo` were watched here until cerberus
+# replaced both parsers with its own clean-room implementations
+# (internal/logql/lsyntax, internal/traceql/ast); the go.mod replaces are
+# gone, so the entries are too. Check go.mod before adding one back.
 
 deps:
   - name: prometheus
@@ -30,34 +39,6 @@ deps:
       - storage/storage.go
       - tsdb/chunkenc
       - tsdb/chunks/chunks.go
-
-  - name: loki
-    upstream: grafana/loki
-    fork: tsouza/loki
-    fork_branch: cerberus-parser
-    # Loki uses /v3 major version; tags must be v3.x.y.
-    tag_prefix: v3
-    test_subtrees:
-      - ./pkg/logql/syntax/...
-      - ./pkg/logql/log/pattern/...
-      - ./pkg/logqlmodel/...
-    relevant_paths:
-      - pkg/logql/syntax
-      - pkg/logql/log/pattern
-      - pkg/logqlmodel
-      - pkg/logql/log/parser.go
-      - pkg/logql/log/labels.go
-      - pkg/logql/log/fmt.go
-
-  - name: tempo
-    upstream: grafana/tempo
-    fork: tsouza/tempo
-    fork_branch: cerberus-accessors
-    tag_prefix: v0
-    test_subtrees:
-      - ./pkg/traceql/...
-    relevant_paths:
-      - pkg/traceql
 
   - name: otelc
     upstream: open-telemetry/opentelemetry-collector-contrib

@@ -20,7 +20,6 @@ set -euo pipefail
 CONFIG="${MONITOR_CONFIG:-monitor.yml}"
 WORK_ROOT="$(mktemp -d -t cerberus-forks-monitor-XXXXXX)"
 MONITOR_REPO="${MONITOR_REPO:-tsouza/cerberus-forks-monitor}"
-TODAY="$(date -u +%Y-%m-%d)"
 
 if [[ ! -f "${CONFIG}" ]]; then
   echo "monitor.yml not found at ${CONFIG}" >&2
@@ -54,6 +53,32 @@ bump_patch() {
   printf 'v%s.%s.%s%s\n' "${major}" "${minor}" "${patch}" "${suffix}"
 }
 
+# Reads a list-valued dep field into the named array.
+#
+# `mapfile -t arr < <(yq ...)` discards yq's exit status, so a config typo or
+# an expression this yq build rejects yields an EMPTY ARRAY that reads exactly
+# like a legitimately absent optional field. That is how
+# `.submodule_tag_paths[]? // empty` — `empty` is a jq builtin, not a yq one —
+# silently disabled every per-submodule tag: the expression errored on every
+# dep, every day, and the loop over the empty array minted nothing. Capturing
+# the output first makes the failure abort the dep instead.
+#
+# An absent optional field is NOT an error: yq exits 0 and prints nothing, so
+# it is normalised to an empty array here.
+yq_list() {
+  local -n __dest="$1"
+  local name="$2" field="$3" raw
+  if ! raw="$(yq -r ".deps[] | select(.name == \"${name}\") | .${field}[]" "${CONFIG}" 2>&1)"; then
+    log "    reading .${field} for ${name} failed: ${raw}"
+    return 1
+  fi
+  if [[ -z "${raw}" ]]; then
+    __dest=()
+  else
+    mapfile -t __dest <<<"${raw}"
+  fi
+}
+
 # Opens a failure-report issue. Returns nonzero (and logs) if issue
 # creation itself fails so the caller can surface that too — issue
 # creation failing must not hide the underlying dep failure.
@@ -76,11 +101,39 @@ process_dep() {
   fork="$(yq -r ".deps[] | select(.name == \"${name}\") | .fork" "${CONFIG}")"
   fork_branch="$(yq -r ".deps[] | select(.name == \"${name}\") | .fork_branch" "${CONFIG}")"
   tag_prefix="$(yq -r ".deps[] | select(.name == \"${name}\") | .tag_prefix" "${CONFIG}")"
-  mapfile -t relevant_paths < <(yq -r ".deps[] | select(.name == \"${name}\") | .relevant_paths[]" "${CONFIG}")
-  mapfile -t test_subtrees < <(yq -r ".deps[] | select(.name == \"${name}\") | .test_subtrees[]" "${CONFIG}")
   local test_workdir
   test_workdir="$(yq -r ".deps[] | select(.name == \"${name}\") | .test_workdir // \"\"" "${CONFIG}")"
-  mapfile -t submodule_tag_paths < <(yq -r ".deps[] | select(.name == \"${name}\") | .submodule_tag_paths[]? // empty" "${CONFIG}")
+
+  # Every field above is mandatory; yq prints the string `null` for a key that
+  # is absent, so an entry missing one would otherwise run against a remote
+  # literally named "null".
+  local field
+  for field in upstream fork fork_branch tag_prefix; do
+    if [[ -z "${!field}" || "${!field}" == "null" ]]; then
+      log "==> ${name}: config is missing .${field}"
+      return 1
+    fi
+  done
+
+  local relevant_paths test_subtrees submodule_tag_paths
+  yq_list relevant_paths "${name}" relevant_paths || return 1
+  yq_list test_subtrees "${name}" test_subtrees || return 1
+  yq_list submodule_tag_paths "${name}" submodule_tag_paths || return 1
+
+  # Both lists are mandatory, and an empty one is worse than a missing dep:
+  # `git log -- ` with no pathspec matches EVERY upstream commit, so the monitor
+  # would rebase and tag on every unrelated change — the exact Dependabot noise
+  # this repo exists to suppress. An empty test_subtrees skips the test gate
+  # entirely and force-pushes an unvalidated rebase. Only submodule_tag_paths is
+  # legitimately optional (single-module forks have none).
+  if (( ${#relevant_paths[@]} == 0 )); then
+    log "==> ${name}: .relevant_paths is empty; refusing to treat every upstream commit as relevant"
+    return 1
+  fi
+  if (( ${#test_subtrees[@]} == 0 )); then
+    log "==> ${name}: .test_subtrees is empty; refusing to push an untested rebase"
+    return 1
+  fi
 
   log "==> ${name}: upstream=${upstream} fork=${fork} branch=${fork_branch}"
 
@@ -143,27 +196,25 @@ process_dep() {
 
   # Run subtree tests.
   local test_status=0
-  if (( ${#test_subtrees[@]} > 0 )); then
-    if [[ -n "${test_workdir}" ]]; then
-      if ! pushd "${test_workdir}" >/dev/null; then
-        log "    test_workdir ${test_workdir} does not exist after rebase"
-        popd >/dev/null
-        return 1
-      fi
-    fi
-    log "    running tests: ${test_subtrees[*]}"
-    if ! go test -count=1 "${test_subtrees[@]}"; then
-      test_status=1
-    fi
-    if [[ -n "${test_workdir}" ]]; then
+  if [[ -n "${test_workdir}" ]]; then
+    if ! pushd "${test_workdir}" >/dev/null; then
+      log "    test_workdir ${test_workdir} does not exist after rebase"
       popd >/dev/null
+      return 1
     fi
+  fi
+  log "    running tests: ${test_subtrees[*]}"
+  if ! go test -count=1 "${test_subtrees[@]}"; then
+    test_status=1
+  fi
+  if [[ -n "${test_workdir}" ]]; then
+    popd >/dev/null
   fi
   if (( test_status != 0 )); then
     log "    tests red after rebase; opening issue"
     open_issue \
       "[${name}] tests fail after rebase on $(date -u +%Y-%m-%d)" \
-      "Rebasing \`${fork_branch}\` onto \`upstream/main\` succeeded, but \`go test\` on the cerberus subtree failed. The branch was NOT force-pushed. Reproduce with: \`git clone https://github.com/${fork}.git && cd $(basename ${fork}) && git fetch origin && git checkout ${fork_branch} && git fetch https://github.com/${upstream}.git main && git rebase FETCH_HEAD\`." || true
+      "Rebasing \`${fork_branch}\` onto \`upstream/main\` succeeded, but \`go test\` on the cerberus subtree failed. The branch was NOT force-pushed. Reproduce with: \`git clone https://github.com/${fork}.git && cd $(basename "${fork}") && git fetch origin && git checkout ${fork_branch} && git fetch https://github.com/${upstream}.git main && git rebase FETCH_HEAD\`." || true
     popd >/dev/null
     return 1
   fi
