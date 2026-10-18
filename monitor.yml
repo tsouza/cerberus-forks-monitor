@@ -31,12 +31,15 @@ deps:
       - ./promql/parser/...
       - ./model/labels/...
       - ./model/histogram/...
+    # cerberus runs the upstream PromQL engine and its storage interfaces
+    # (for queries outside the span its own lowering represents exactly), so
+    # the whole promql tree and storage are watched, not only the parser.
     relevant_paths:
-      - promql/parser
+      - promql
       - model/labels
       - model/histogram
       - util/annotations
-      - storage/storage.go
+      - storage
       - tsdb/chunkenc
       - tsdb/chunks/chunks.go
 
