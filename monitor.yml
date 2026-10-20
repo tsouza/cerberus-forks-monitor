@@ -11,6 +11,12 @@
 # - tag_prefix     : the semver prefix for new tags. Must already exist
 #                    on the fork (the baseline v0.0.1-cerberus-* tags were
 #                    minted when the fork was created).
+# - track          : optional, `main` (the default) or `release`. `main`
+#                    rebases onto upstream/main when a relevant path changed
+#                    and bumps the tag's patch. `release` rebases onto the
+#                    newest stable upstream release tag (vX.Y.Z) whenever a
+#                    newer one exists, and tags it with that release's Go
+#                    module number (v3.15.0 -> v0.315.0-cerberus-parser).
 #
 # An entry belongs here only while cerberus's go.mod routes that dependency
 # through the fork. A fork cerberus no longer consumes has nothing to keep in
@@ -27,6 +33,10 @@ deps:
     fork: tsouza/prometheus
     fork_branch: cerberus-parser
     tag_prefix: v0
+    # cerberus pins its reference Prometheus server to the release this fork
+    # carries (test/regression/fork_version_skew_test.go), so the fork
+    # follows releases, never unreleased upstream/main.
+    track: release
     test_subtrees:
       - ./promql/parser/...
       - ./model/labels/...

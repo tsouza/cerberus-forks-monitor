@@ -69,6 +69,21 @@ bump_patch() {
   printf 'v%s.%s.%s%s\n' "${major}" "${minor}" "${patch}" "${suffix}"
 }
 
+# Map an upstream release tag to the fork tag that carries it, in the Go
+# module numbering upstream publishes for the same release (prometheus v3.15.0
+# is the Go module v0.315.0), with the cerberus suffix of last_tag:
+#  v3.15.0, v0.311.3-cerberus-parser  -> v0.315.0-cerberus-parser
+release_tag() {
+  local release="$1" last_tag="$2"
+  local suffix=""
+  if [[ "${last_tag}" == *-* ]]; then
+    suffix="-${last_tag#*-}"
+  fi
+  local major minor patch
+  IFS=. read -r major minor patch <<<"${release#v}"
+  printf 'v0.%d.%d%s\n' "$((major * 100 + minor))" "${patch}" "${suffix}"
+}
+
 # Reads a list-valued dep field into the named array.
 #
 # `mapfile -t arr < <(yq ...)` discards yq's exit status, so a config typo or
@@ -164,6 +179,12 @@ process_dep() {
   tag_prefix="$(yq -r ".deps[] | select(.name == \"${name}\") | .tag_prefix" "${CONFIG}")"
   local test_workdir
   test_workdir="$(yq -r ".deps[] | select(.name == \"${name}\") | .test_workdir // \"\"" "${CONFIG}")"
+  local track
+  track="$(yq -r ".deps[] | select(.name == \"${name}\") | .track // \"main\"" "${CONFIG}")"
+  if [[ "${track}" != "main" && "${track}" != "release" ]]; then
+    log "==> ${name}: .track is \"${track}\"; expected main or release"
+    return 1
+  fi
 
   # Every field above is mandatory; yq prints the string `null` for a key that
   # is absent, so an entry missing one would otherwise run against a remote
@@ -237,15 +258,42 @@ process_dep() {
   fi
   log "    last tag: ${last_tag}"
 
-  # Did anything in relevant_paths change in upstream since last tag?
-  local changed
-  changed="$(git log --pretty=format:%H "${last_tag}..upstream/main" -- "${relevant_paths[@]}" || true)"
-  if [[ -z "${changed}" ]]; then
-    log "    no relevant changes since ${last_tag}; skipping"
-    popd >/dev/null
-    return 0
+  # The commit the branch is rebased onto. track: main follows upstream/main
+  # and moves only when a relevant path changed. track: release follows the
+  # newest stable upstream release and moves whenever a newer one exists,
+  # because cerberus pins its reference server to the same release.
+  local base_ref fetch_spec new_tag=""
+  if [[ "${track}" == "release" ]]; then
+    local release
+    release="$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+    if [[ -z "${release}" ]]; then
+      log "    no stable release tag found on ${upstream}"
+      open_issue "[${name}] no upstream release tag" "The monitor found no \`vX.Y.Z\` tag on \`${upstream}\` to follow." || true
+      popd >/dev/null
+      return 1
+    fi
+    new_tag="$(release_tag "${release}" "${last_tag}")"
+    if [[ "${new_tag}" == "${last_tag}" ]]; then
+      log "    already on ${release} (${last_tag}); skipping"
+      popd >/dev/null
+      return 0
+    fi
+    log "    newer release: ${release}"
+    base_ref="${release}"
+    fetch_spec="tag ${release}"
+  else
+    base_ref="upstream/main"
+    fetch_spec="main"
+    # Did anything in relevant_paths change in upstream since last tag?
+    local changed
+    changed="$(git log --pretty=format:%H "${last_tag}..upstream/main" -- "${relevant_paths[@]}" || true)"
+    if [[ -z "${changed}" ]]; then
+      log "    no relevant changes since ${last_tag}; skipping"
+      popd >/dev/null
+      return 0
+    fi
+    log "    relevant commits: $(echo "${changed}" | wc -l)"
   fi
-  log "    relevant commits: $(echo "${changed}" | wc -l)"
 
   if ! git checkout --quiet "${fork_branch}"; then
     log "    checkout of ${fork_branch} failed"
@@ -255,7 +303,7 @@ process_dep() {
   # --exec runs after each replayed commit, rewriting its author to the bot so
   # the push below is not rejected as publishing a private address. It cannot
   # touch an upstream commit: the todo list only ever holds the fork's own.
-  if ! git rebase upstream/main \
+  if ! git rebase "${base_ref}" \
     --exec "git commit --amend --no-edit --author='${BOT_NAME} <${BOT_EMAIL}>'"; then
     log "    rebase conflict; opening issue"
     local conflict
@@ -263,7 +311,7 @@ process_dep() {
     git rebase --abort || true
     open_issue \
       "[${name}] rebase conflict" \
-      "Rebasing \`${fork_branch}\` onto \`upstream/main\` produced conflicts. Conflict status:
+      "Rebasing \`${fork_branch}\` onto \`${base_ref}\` produced conflicts. Conflict status:
 \`\`\`
 ${conflict}
 \`\`\`
@@ -293,7 +341,7 @@ Manual rebase required. After fixing locally and force-pushing, re-run the workf
     log "    tests red after rebase; opening issue"
     open_issue \
       "[${name}] tests fail after rebase" \
-      "Rebasing \`${fork_branch}\` onto \`upstream/main\` succeeded, but \`go test\` on the cerberus subtree failed. The branch was NOT force-pushed. Reproduce with: \`git clone https://github.com/${fork}.git && cd $(basename "${fork}") && git fetch origin && git checkout ${fork_branch} && git fetch https://github.com/${upstream}.git main && git rebase FETCH_HEAD\`." || true
+      "Rebasing \`${fork_branch}\` onto \`${base_ref}\` succeeded, but \`go test\` on the cerberus subtree failed. The branch was NOT force-pushed. Reproduce with: \`git clone https://github.com/${fork}.git && cd $(basename "${fork}") && git fetch origin && git checkout ${fork_branch} && git fetch https://github.com/${upstream}.git ${fetch_spec} && git rebase FETCH_HEAD\`." || true
     popd >/dev/null
     return 1
   fi
@@ -313,7 +361,7 @@ Manual rebase required. After fixing locally and force-pushing, re-run the workf
     log "    push of ${fork_branch} failed: ${push_out}"
     open_issue \
       "[${name}] push of ${fork_branch} rejected" \
-      "The rebase onto \`upstream/main\` succeeded and \`go test\` was green, but \`git push --force-with-lease origin ${fork_branch}\` was declined. \`${fork}\` still carries the pre-rebase branch and no tag was minted. The remote said:
+      "The rebase onto \`${base_ref}\` succeeded and \`go test\` was green, but \`git push --force-with-lease origin ${fork_branch}\` was declined. \`${fork}\` still carries the pre-rebase branch and no tag was minted. The remote said:
 \`\`\`
 ${push_out}
 \`\`\`" || true
@@ -322,9 +370,11 @@ ${push_out}
   fi
   log "    pushed ${fork_branch}: ${push_out}"
 
-  # Mint the new tag.
-  local new_tag
-  new_tag="$(bump_patch "${last_tag}")"
+  # Mint the new tag: the release's own number on track: release, the next
+  # patch on track: main.
+  if [[ -z "${new_tag}" ]]; then
+    new_tag="$(bump_patch "${last_tag}")"
+  fi
   if ! publish_tag "${name}" "${fork}" "${new_tag}"; then
     popd >/dev/null
     return 1
