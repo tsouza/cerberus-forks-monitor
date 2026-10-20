@@ -60,6 +60,7 @@ entry binds one upstream to one fork. The fields:
 | `fork`               | `owner/repo` of our fork. Must be writable by `FORKS_PAT`.              |
 | `fork_branch`        | The long-lived `cerberus-*` branch the monitor maintains.               |
 | `tag_prefix`         | The semver major version. Must match Go module path conventions.        |
+| `track`              | Optional. `main` (default) follows `upstream/main` as described above; `release` rebases onto the newest stable upstream release tag whenever a newer one exists and tags it with that release's Go module number (`v3.15.0` → `v0.315.0-cerberus-parser`). |
 | `relevant_paths`     | Passed to `git log -- <paths>`. Only commits touching these trigger work. |
 | `test_subtrees`      | Passed to `go test`. Each entry is a Go pkg pattern.                    |
 | `test_workdir`       | Optional. Run `go test` inside this directory (collector-contrib has a per-subdir module layout). |
